@@ -123,6 +123,7 @@ class MTV_PUBLIC MythCCExtractorPlayer : public MythPlayer
     ~MythCCExtractorPlayer() {}
 
     bool run(void);
+    void stop(void);
 
     virtual CC708Reader    *GetCC708Reader(uint id=0);
     virtual CC608Reader    *GetCC608Reader(uint id=0);

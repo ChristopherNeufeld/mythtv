@@ -9,6 +9,8 @@ using namespace std;
 #include <QString>
 #include <QtCore>
 #include <QtGui>
+#include <QObject>
+#include <QThread>
 
 // MythTV headers
 #include "mythccextractorplayer.h"
@@ -47,7 +49,44 @@ namespace {
     };
 }
 
-static int RunCCExtract(const ProgramInfo &program_info)
+class ExtractorThread : public QObject
+{
+    Q_OBJECT
+
+public:
+    ExtractorThread(ProgramInfo const &program_info)
+        : QObject(), _proginfo(program_info), _ccp(NULL), _rcode(-1)
+    {}
+
+    void sendStop() {
+        _ccp->stop();
+    }
+
+    int getResultCode() const { return _rcode; }
+
+public slots:
+    void doWork(void) {
+
+        _rcode = RunCCExtract(_proginfo);
+        emit ccfinished();
+        exit(_rcode);
+    }
+
+signals:
+    void ccfinished();
+
+
+private:
+    int RunCCExtract(ProgramInfo const &program_info);
+
+private:
+    ProgramInfo const &_proginfo;
+    MythCCExtractorPlayer *_ccp;
+    int _rcode;
+};
+
+
+int ExtractorThread::RunCCExtract(const ProgramInfo &program_info)
 {
     if (!program_info.IsLocal())
     {
@@ -79,19 +118,20 @@ static int RunCCExtract(const ProgramInfo &program_info)
                                       kDecodeNoLoopFilter | kDecodeFewBlocks |
                                       kDecodeLowRes | kDecodeSingleThreaded |
                                       kDecodeNoDecode);
-    MythCCExtractorPlayer *ccp = new MythCCExtractorPlayer(flags, true, filename);
+
+    _ccp = new MythCCExtractorPlayer(flags, true, filename);
     PlayerContext *ctx = new PlayerContext(kCCExtractorInUseID);
     ctx->SetPlayingInfo(&program_info);
     ctx->SetRingBuffer(tmprbuf);
-    ctx->SetPlayer(ccp);
+    ctx->SetPlayer(_ccp);
 
-    ccp->SetPlayerInfo(NULL, NULL, ctx);
-    if (ccp->OpenFile() < 0)
+    _ccp->SetPlayerInfo(NULL, NULL, ctx);
+    if (_ccp->OpenFile() < 0)
     {
         cerr << "Failed to open " << qPrintable(filename) << endl;
         return GENERIC_EXIT_NOT_OK;
     }
-    if (!ccp->run())
+    if (!_ccp->run())
     {
         cerr << "Failed to decode " << qPrintable(filename) << endl;
         return GENERIC_EXIT_NOT_OK;
@@ -101,6 +141,19 @@ static int RunCCExtract(const ProgramInfo &program_info)
 
     return GENERIC_EXIT_OK;
 }
+
+
+#include "main.moc"
+
+
+ExtractorThread *worker = NULL;
+
+static void handleSIGTERM(void)
+{
+    if (worker != NULL)
+        worker->sendStop();
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -150,6 +203,8 @@ int main(int argc, char *argv[])
     signallist << SIGRTMIN;
 #endif
     SignalHandler::Init(signallist);
+    SignalHandler::SetHandler(SIGTERM, handleSIGTERM);
+    SignalHandler::SetHandler(SIGINT, handleSIGTERM);
     signal(SIGHUP, SIG_IGN);
 #endif
 
@@ -163,7 +218,22 @@ int main(int argc, char *argv[])
     }
 
     ProgramInfo pginfo(infile);
-    return RunCCExtract(pginfo);
+    worker = new ExtractorThread(pginfo);
+    QThread *workerThread = new QThread(&a);
+
+    worker->moveToThread(workerThread);
+
+    QObject::connect(workerThread, SIGNAL(started()), worker, SLOT(doWork()));
+    QObject::connect(workerThread, SIGNAL(finished()), workerThread, SLOT(deleteLater()));
+    QObject::connect(worker, SIGNAL(ccfinished()), QCoreApplication::instance(), SLOT(quit()));
+
+    workerThread->start();
+
+    a.exec();
+
+    workerThread->wait();
+
+    return worker->getResultCode();
 }
 
 

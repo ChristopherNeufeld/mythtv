@@ -116,6 +116,13 @@ static QString progress_string(
     }
 }
 
+// cleanly shut down, writing out current buffers
+void MythCCExtractorPlayer::stop(void)
+{
+    killdecoder = true;
+}
+
+
 bool MythCCExtractorPlayer::run(void)
 {
     m_myFramesPlayed = 0;
